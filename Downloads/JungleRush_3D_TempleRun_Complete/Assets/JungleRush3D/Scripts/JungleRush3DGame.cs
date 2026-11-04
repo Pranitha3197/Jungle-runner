@@ -1,0 +1,318 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class JungleRush3DGame : MonoBehaviour
+{
+    [Header("Runner")]
+    public float startSpeed = 8f;
+    public float maxSpeed = 19f;
+    public float acceleration = 0.22f;
+    public float laneWidth = 2.2f;
+
+    private Transform player;
+    private Transform cameraRig;
+    private CharacterController controller;
+    private float speed, distance, verticalVelocity, jumpTimer, duckTimer, spawnDistance = 22f;
+    private int lane = 1, coins, skin;
+    private bool gameOver;
+    private readonly List<GameObject> segments = new List<GameObject>();
+    private readonly List<WorldItem> items = new List<WorldItem>();
+    private readonly Color[] skinColors = {
+        new Color(0.08f, 0.65f, 0.95f), new Color(0.95f, 0.28f, 0.08f), new Color(0.28f, 0.78f, 0.20f)
+    };
+    private GUIStyle titleStyle, hudStyle, buttonStyle, smallStyle;
+
+    private class WorldItem
+    {
+        public GameObject root;
+        public int type; // 0 obstacle, 1 coin, 2 overhead obstacle
+        public float z;
+        public int lane;
+        public bool collected;
+    }
+
+    void Start()
+    {
+        Application.targetFrameRate = 60;
+        speed = startSpeed;
+        BuildLighting();
+        BuildPlayer();
+        BuildCamera();
+        for (int i = 0; i < 7; i++) CreateSegment(i * 22f);
+        for (int i = 0; i < 14; i++) SpawnItem(22f + i * 8f);
+    }
+
+    void BuildLighting()
+    {
+        RenderSettings.ambientLight = new Color(0.48f, 0.53f, 0.42f);
+        RenderSettings.fog = true;
+        RenderSettings.fogColor = new Color(0.28f, 0.43f, 0.31f);
+        RenderSettings.fogMode = FogMode.Exponential;
+        RenderSettings.fogDensity = 0.012f;
+        if (FindObjectOfType<Light>() == null)
+        {
+            GameObject lightGo = new GameObject("Jungle Sun");
+            Light light = lightGo.AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.intensity = 1.15f;
+            lightGo.transform.rotation = Quaternion.Euler(48f, -28f, 0f);
+        }
+    }
+
+    void BuildPlayer()
+    {
+        GameObject root = new GameObject("Runner Character");
+        player = root.transform;
+        player.position = new Vector3(0, 0.08f, 0);
+        controller = root.AddComponent<CharacterController>();
+        controller.height = 1.85f;
+        controller.radius = 0.34f;
+        controller.center = new Vector3(0, 0.93f, 0);
+        controller.stepOffset = 0.25f;
+
+        MakePrimitive(PrimitiveType.Capsule, "Body", player, new Vector3(0, 1.02f, 0), new Vector3(0.65f, 0.78f, 0.65f), skinColors[skin]);
+        MakePrimitive(PrimitiveType.Sphere, "Head", player, new Vector3(0, 1.88f, 0), new Vector3(0.48f, 0.48f, 0.48f), new Color(0.78f, 0.52f, 0.34f));
+        MakePrimitive(PrimitiveType.Sphere, "Hair", player, new Vector3(0, 2.08f, -0.02f), new Vector3(0.5f, 0.2f, 0.5f), new Color(0.12f, 0.07f, 0.035f));
+        MakePrimitive(PrimitiveType.Cube, "Backpack", player, new Vector3(0, 1.14f, -0.34f), new Vector3(0.48f, 0.56f, 0.25f), new Color(0.35f, 0.19f, 0.07f));
+        MakePrimitive(PrimitiveType.Capsule, "Left Arm", player, new Vector3(-0.43f, 1.08f, 0), new Vector3(0.19f, 0.42f, 0.19f), new Color(0.78f, 0.52f, 0.34f));
+        MakePrimitive(PrimitiveType.Capsule, "Right Arm", player, new Vector3(0.43f, 1.08f, 0), new Vector3(0.19f, 0.42f, 0.19f), new Color(0.78f, 0.52f, 0.34f));
+        MakePrimitive(PrimitiveType.Capsule, "Left Boot", player, new Vector3(-0.19f, 0.28f, 0.03f), new Vector3(0.24f, 0.45f, 0.28f), new Color(0.15f, 0.12f, 0.09f));
+        MakePrimitive(PrimitiveType.Capsule, "Right Boot", player, new Vector3(0.19f, 0.28f, 0.03f), new Vector3(0.24f, 0.45f, 0.28f), new Color(0.15f, 0.12f, 0.09f));
+    }
+
+    void BuildCamera()
+    {
+        Camera cam = Camera.main;
+        if (cam == null)
+        {
+            GameObject c = new GameObject("Main Camera");
+            c.tag = "MainCamera";
+            cam = c.AddComponent<Camera>();
+        }
+        cam.fieldOfView = 68f;
+        cam.nearClipPlane = 0.1f;
+        cam.farClipPlane = 180f;
+        cam.transform.position = new Vector3(0, 5.0f, -8.5f);
+        cam.transform.rotation = Quaternion.Euler(18f, 0, 0);
+        cameraRig = cam.transform;
+    }
+
+    GameObject MakePrimitive(PrimitiveType type, string name, Transform parent, Vector3 localPos, Vector3 scale, Color color)
+    {
+        GameObject go = GameObject.CreatePrimitive(type);
+        go.name = name;
+        go.transform.SetParent(parent, false);
+        go.transform.localPosition = localPos;
+        go.transform.localScale = scale;
+        Renderer r = go.GetComponent<Renderer>();
+        if (r != null)
+        {
+            r.material = new Material(Shader.Find("Standard"));
+            r.material.color = color;
+        }
+        Collider col = go.GetComponent<Collider>();
+        if (col != null && parent == player) Destroy(col);
+        return go;
+    }
+
+    void CreateSegment(float z)
+    {
+        GameObject root = new GameObject("Jungle Path Segment");
+        root.transform.position = new Vector3(0, 0, z);
+        segments.Add(root);
+        MakePrimitive(PrimitiveType.Cube, "Trail", root.transform, new Vector3(0, -0.18f, 11f), new Vector3(7.3f, 0.35f, 22.5f), new Color(0.40f, 0.27f, 0.13f));
+        MakePrimitive(PrimitiveType.Cube, "Left Trail Edge", root.transform, new Vector3(-3.65f, -0.01f, 11f), new Vector3(0.22f, 0.2f, 22.5f), new Color(0.72f, 0.57f, 0.28f));
+        MakePrimitive(PrimitiveType.Cube, "Right Trail Edge", root.transform, new Vector3(3.65f, -0.01f, 11f), new Vector3(0.22f, 0.2f, 22.5f), new Color(0.72f, 0.57f, 0.28f));
+        for (int i = 0; i < 9; i++)
+        {
+            float zz = 1f + i * 2.35f;
+            MakePrimitive(PrimitiveType.Cube, "Trail Stone", root.transform, new Vector3(0, 0.005f, zz), new Vector3(0.07f, 0.025f, 0.72f), new Color(0.72f, 0.57f, 0.32f));
+        }
+        for (int side = -1; side <= 1; side += 2)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                float zz = 1f + i * 5.6f + Random.Range(-1.1f, 1.1f);
+                float x = side * Random.Range(4.5f, 7.3f);
+                float height = Random.Range(3.8f, 6.2f);
+                MakePrimitive(PrimitiveType.Cylinder, "Jungle Tree Trunk", root.transform,
+                    new Vector3(x, height * 0.5f - 0.1f, zz), new Vector3(Random.Range(.22f,.4f), height * .5f, Random.Range(.22f,.4f)), new Color(.25f,.14f,.065f));
+                MakePrimitive(PrimitiveType.Sphere, "Jungle Canopy", root.transform,
+                    new Vector3(x, height + 0.4f, zz), new Vector3(Random.Range(2.0f,3.3f), Random.Range(1.6f,2.5f), Random.Range(1.8f,3.0f)),
+                    new Color(Random.Range(.035f,.09f), Random.Range(.20f,.34f), Random.Range(.06f,.12f)));
+                if (i % 2 == 0)
+                    MakePrimitive(PrimitiveType.Cylinder, "Hanging Vine", root.transform,
+                        new Vector3(x + .6f, height - 1.2f, zz + .3f), new Vector3(.035f, 1.25f, .035f), new Color(.13f,.28f,.07f));
+                MakePrimitive(PrimitiveType.Sphere, "Fern", root.transform, new Vector3(x - side*.55f,.45f,zz+1.0f),
+                    new Vector3(1.1f,.8f,1.0f), new Color(.06f,.30f,.075f));
+            }
+        }
+        // ancient stone fragments at the edge
+        if (Random.value > .35f)
+        {
+            float side = Random.value > .5f ? 1f : -1f;
+            MakePrimitive(PrimitiveType.Cube, "Ancient Ruin", root.transform, new Vector3(side*4.5f,1.0f,Random.Range(3f,18f)),
+                new Vector3(.65f,2.0f,.65f), new Color(.35f,.34f,.24f));
+        }
+    }
+
+    void SpawnItem(float z)
+    {
+        int l = Random.Range(0, 3);
+        if (Random.value < 0.55f)
+        {
+            // A short line of coins in one lane.
+            int count = Random.Range(3, 6);
+            for (int i = 0; i < count; i++)
+            {
+                GameObject coin = MakePrimitive(PrimitiveType.Cylinder, "Collectible Gold Coin", null,
+                    new Vector3((l - 1) * laneWidth, 1.0f, z + i * 1.55f), new Vector3(.42f,.09f,.42f), new Color(1f,.72f,.03f));
+                coin.transform.rotation = Quaternion.Euler(90,0,0);
+                MakePrimitive(PrimitiveType.Sphere, "Coin Shine", coin.transform, new Vector3(0,0,.07f), new Vector3(.13f,.13f,.05f), new Color(1f,.96f,.5f));
+                DisableColliders(coin);
+                items.Add(new WorldItem { root = coin, type = 1, z = z + i * 1.55f, lane = l });
+            }
+        }
+        else
+        {
+            int type = Random.value < .5f ? 0 : 2;
+            float x = (l - 1) * laneWidth;
+            GameObject obstacle = new GameObject(type == 0 ? "Fallen Log Obstacle" : "Low Jungle Barrier");
+            obstacle.transform.position = new Vector3(x, type == 0 ? .42f : 1.15f, z);
+            if (type == 0)
+            {
+                MakePrimitive(PrimitiveType.Cylinder, "Fallen Log", obstacle.transform, Vector3.zero, new Vector3(.48f,1.1f,.48f), new Color(.26f,.13f,.055f)).transform.rotation = Quaternion.Euler(0,0,90);
+                MakePrimitive(PrimitiveType.Cylinder, "Log End", obstacle.transform, new Vector3(.95f,0,0), new Vector3(.12f,.50f,.50f), new Color(.62f,.38f,.16f)).transform.rotation = Quaternion.Euler(0,0,90);
+            }
+            else
+            {
+                MakePrimitive(PrimitiveType.Cube, "Barrier", obstacle.transform, Vector3.zero, new Vector3(1.25f,.32f,.35f), new Color(.46f,.21f,.065f));
+                MakePrimitive(PrimitiveType.Cube, "Barrier Post L", obstacle.transform, new Vector3(-.48f,-.42f,0), new Vector3(.13f,.8f,.15f), new Color(.3f,.16f,.055f));
+                MakePrimitive(PrimitiveType.Cube, "Barrier Post R", obstacle.transform, new Vector3(.48f,-.42f,0), new Vector3(.13f,.8f,.15f), new Color(.3f,.16f,.055f));
+            }
+            DisableColliders(obstacle);
+            items.Add(new WorldItem { root = obstacle, type = type, z = z, lane = l });
+        }
+    }
+
+    void DisableColliders(GameObject root)
+    {
+        Collider[] colliders = root.GetComponentsInChildren<Collider>();
+        foreach (Collider collider in colliders) Destroy(collider);
+    }
+
+    void Update()
+    {
+        if (gameOver) return;
+        float dt = Time.deltaTime;
+        distance += speed * dt;
+        speed = Mathf.Min(maxSpeed, startSpeed + distance * acceleration / 100f);
+
+        if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.A)) lane = Mathf.Max(0, lane - 1);
+        if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.D)) lane = Mathf.Min(2, lane + 1);
+        if ((Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W)) && controller.isGrounded)
+            verticalVelocity = 8.8f;
+        bool duck = Input.GetKey(KeyCode.DownArrow) || Input.GetKey(KeyCode.S);
+        if (duck) duckTimer = .45f;
+        else duckTimer = Mathf.Max(0, duckTimer - dt);
+
+        verticalVelocity += -22f * dt;
+        float targetX = (lane - 1) * laneWidth;
+        float dx = Mathf.Lerp(player.position.x, targetX, dt * 12f) - player.position.x;
+        controller.height = duckTimer > 0 ? 1.0f : 1.85f;
+        controller.center = new Vector3(0, controller.height * .5f, 0);
+        Vector3 move = new Vector3(dx / Mathf.Max(dt, .001f), verticalVelocity, speed);
+        controller.Move(move * dt);
+        if (controller.isGrounded && verticalVelocity < 0) verticalVelocity = -1f;
+
+        cameraRig.position = Vector3.Lerp(cameraRig.position, new Vector3(player.position.x * .35f, player.position.y + 4.3f, player.position.z - 7.5f), dt * 5f);
+        cameraRig.rotation = Quaternion.Lerp(cameraRig.rotation, Quaternion.LookRotation((player.position + new Vector3(0, 1.0f, 7.0f)) - cameraRig.position), dt * 5f);
+
+        RecycleSegments();
+        UpdateItems();
+        if (player.position.y < -3f) EndGame();
+    }
+
+    void RecycleSegments()
+    {
+        float farthest = -999f;
+        foreach (GameObject s in segments) if (s != null) farthest = Mathf.Max(farthest, s.transform.position.z);
+        foreach (GameObject s in segments)
+        {
+            if (s != null && s.transform.position.z + 22f < player.position.z - 8f)
+            {
+                s.transform.position = new Vector3(0,0,farthest + 22f);
+                farthest = s.transform.position.z;
+            }
+        }
+        if (player.position.z + 90f > spawnDistance)
+        {
+            SpawnItem(player.position.z + 90f + Random.Range(0f, 12f));
+            spawnDistance = player.position.z + 80f;
+        }
+    }
+
+    void UpdateItems()
+    {
+        for (int i = items.Count - 1; i >= 0; i--)
+        {
+            WorldItem item = items[i];
+            if (item.root == null) { items.RemoveAt(i); continue; }
+            if (item.type == 1) item.root.transform.Rotate(0, 180f * Time.deltaTime, 0, Space.World);
+            float dz = item.z - player.position.z;
+            float dx = Mathf.Abs(item.root.transform.position.x - player.position.x);
+            if (item.type == 1 && dz < 1.2f && dz > -1.0f && dx < .95f && Mathf.Abs(player.position.y - item.root.transform.position.y) < 2.0f)
+            {
+                coins++; Destroy(item.root); items.RemoveAt(i); continue;
+            }
+            if (item.type != 1 && dz < 1.0f && dz > -.6f && dx < 1.05f)
+            {
+                bool jumpedOverLog = item.type == 0 && player.position.y > 1.25f;
+                bool slidUnderBarrier = item.type == 2 && duckTimer > 0;
+                if (!jumpedOverLog && !slidUnderBarrier) { EndGame(); return; }
+            }
+            if (dz < -5f) { Destroy(item.root); items.RemoveAt(i); }
+        }
+    }
+
+    void EndGame() { gameOver = true; }
+
+    void OnGUI()
+    {
+        if (titleStyle == null)
+        {
+            titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 30, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+            titleStyle.normal.textColor = Color.white;
+            hudStyle = new GUIStyle(GUI.skin.label) { fontSize = 19, fontStyle = FontStyle.Bold };
+            hudStyle.normal.textColor = Color.white;
+            buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 16, fontStyle = FontStyle.Bold };
+            smallStyle = new GUIStyle(GUI.skin.label) { fontSize = 14, alignment = TextAnchor.MiddleCenter };
+            smallStyle.normal.textColor = Color.white;
+        }
+        GUI.color = new Color(.02f,.07f,.025f,.82f); GUI.Box(new Rect(12,12,265,102), GUIContent.none); GUI.color = Color.white;
+        GUI.Label(new Rect(24,16,245,34),"JUNGLE RUSH 3D",titleStyle);
+        GUI.Label(new Rect(25,53,245,24),"Coins: "+coins+"   Distance: "+Mathf.FloorToInt(distance)+"m",hudStyle);
+        GUI.Label(new Rect(25,79,245,24),"Speed: "+speed.ToString("0.0"),hudStyle);
+        GUI.color = new Color(.02f,.07f,.025f,.82f); GUI.Box(new Rect(Screen.width-175,12,163,115),GUIContent.none); GUI.color=Color.white;
+        GUI.Label(new Rect(Screen.width-169,16,150,22),"CHOOSE RUNNER",smallStyle);
+        string[] names={"1  Explorer","2  Adventurer","3  Ranger"};
+        for(int i=0;i<3;i++){GUI.backgroundColor=skin==i?skinColors[i]:Color.white;if(GUI.Button(new Rect(Screen.width-165,41+i*25,143,23),names[i],buttonStyle))SelectSkin(i);}
+        GUI.backgroundColor=Color.white;
+        GUI.Label(new Rect(Screen.width/2-300,Screen.height-32,600,25),"← / → LANES     SPACE / ↑ JUMP     S / ↓ SLIDE",smallStyle);
+        if(gameOver)
+        {
+            GUI.color=new Color(0,0,0,.78f);GUI.Box(new Rect(0,0,Screen.width,Screen.height),GUIContent.none);GUI.color=Color.white;
+            GUI.Label(new Rect(Screen.width/2-220,Screen.height/2-95,440,60),"RUN OVER",titleStyle);
+            GUI.Label(new Rect(Screen.width/2-220,Screen.height/2-35,440,30),"Coins: "+coins+"    Distance: "+Mathf.FloorToInt(distance)+"m",hudStyle);
+            if(GUI.Button(new Rect(Screen.width/2-100,Screen.height/2+18,200,50),"RUN AGAIN",buttonStyle))SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        }
+    }
+
+    void SelectSkin(int index)
+    {
+        skin=index;
+        Transform body=player.Find("Body");
+        if(body!=null) body.GetComponent<Renderer>().material.color=skinColors[skin];
+    }
+}
